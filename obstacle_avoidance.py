@@ -13,13 +13,55 @@ def get_ik_data():
         _thread_local.ik_data = mujoco.MjData(model)
     return _thread_local.ik_data
 
-# 柱子 XY 位置和半径
-PILLARS_XY = np.array([[0.4, 0.4], [-0.4, 0.5], [0.2, 0.6]])
-PILLAR_HEIGHTS = np.array([0.8, 0.7, 1.0])   
-SAFETY_MARGIN = 0.05                          
-PILLAR_R = 0.06 + 0.04 + SAFETY_MARGIN       
-WALL_Y_MAX = 1.15 - 0.05
-WALL_X_LIM = 1.15 - 0.05
+# 从模型中自动解析障碍物参数
+def parse_obstacles_from_model():
+    pillars_xy = []
+    pillar_heights = []
+    pillar_radius = None
+    wall_y_max = None
+    wall_x_lim = None
+
+    # 遍历所有几何体
+    for i in range(model.ngeom):
+        geom_name = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_GEOM, i)
+        if geom_name is None:
+            continue
+
+        geom_type = model.geom_type[i]
+        geom_size = model.geom_size[i]
+        body_id = model.geom_bodyid[i]
+        body_pos = model.body_pos[body_id]
+
+
+        if geom_name.startswith('pillar') and geom_type == mujoco.mjtGeom.mjGEOM_CYLINDER:
+            pillars_xy.append([body_pos[0], body_pos[1]])
+            pillar_heights.append(body_pos[2] * 2)  
+            if pillar_radius is None:
+                pillar_radius = geom_size[0]  
+
+        elif geom_name.startswith('wall') and geom_type == mujoco.mjtGeom.mjGEOM_BOX:
+            if 'wall_y' in geom_name:
+                wall_y_max = body_pos[1] - geom_size[1]  
+            elif 'wall_x' in geom_name:
+                wall_x_lim = abs(body_pos[0]) - geom_size[0]  
+
+    return (np.array(pillars_xy) if pillars_xy else np.array([[0.4, 0.4], [-0.4, 0.5], [0.2, 0.6]]),
+            np.array(pillar_heights) if pillar_heights else np.array([0.8, 0.7, 1.0]),
+            pillar_radius if pillar_radius else 0.06,
+            wall_y_max if wall_y_max else 1.1,
+            wall_x_lim if wall_x_lim else 1.1)
+
+
+PILLARS_XY, PILLAR_HEIGHTS, _pillar_r, WALL_Y_MAX, WALL_X_LIM = parse_obstacles_from_model()
+SAFETY_MARGIN = 0.05
+PILLAR_R = _pillar_r + 0.04 + SAFETY_MARGIN  
+
+print(f"Parsed obstacles from XML:")
+print(f"  Pillars XY: {PILLARS_XY.tolist()}")
+print(f"  Pillar heights: {PILLAR_HEIGHTS.tolist()}")
+print(f"  Pillar radius: {_pillar_r:.3f}")
+print(f"  Wall Y max: {WALL_Y_MAX:.3f}")
+print(f"  Wall X limit: {WALL_X_LIM:.3f}")
 
 LINK_NAMES = ["base", "link1", "link2", "link3", "link4", "link5", "link6"]
 LINK_RADII  = [0.08,   0.04,   0.035,  0.03,   0.025,  0.02,   0.03]

@@ -23,16 +23,29 @@
     <light pos="0 0 1.5" dir="0 0 -1" directional="true"/>
     <geom name="floor" size="0 0 0.05" type="plane" material="groundplane"/>
 
-    <body name="obstacle1" pos="0.15 0.15 0.1">
-      <geom name="obs1" type="box" size="0.05 0.05 0.1" material="obstacle_red"/>
+    <body name="wall_y_pos" pos="0 1.15 0.5">
+      <geom name="wall_y" type="box" size="1.2 0.05 0.5" rgba="0.7 0.7 0.7 0.5"/>
     </body>
 
-    <body name="obstacle2" pos="0.2 -0.1 0.08">
-      <geom name="obs2" type="cylinder" size="0.04 0.08" material="obstacle_blue"/>
+    <body name="wall_x_pos" pos="1.15 0 0.5">
+      <geom name="wall_x_pos" type="box" size="0.05 1.2 0.5" rgba="0.7 0.7 0.7 0.5"/>
     </body>
 
-    <body name="obstacle3" pos="-0.1 0.2 0.06">
-      <geom name="obs3" type="sphere" size="0.06" material="obstacle_green"/>
+    <body name="wall_x_neg" pos="-1.15 0 0.5">
+      <geom name="wall_x_neg" type="box" size="0.05 1.2 0.5" rgba="0.7 0.7 0.7 0.5"/>
+    </body>
+
+
+    <body name="pillar1" pos="0.4 0.4 0.4">
+      <geom name="pillar1" type="cylinder" size="0.06 0.4" material="obstacle_red"/>
+    </body>
+
+    <body name="pillar2" pos="-0.4 0.5 0.35">
+      <geom name="pillar2" type="cylinder" size="0.06 0.35" material="obstacle_blue"/>
+    </body>
+
+    <body name="pillar3" pos="0.2 0.6 0.5">
+      <geom name="pillar3" type="cylinder" size="0.06 0.5" material="obstacle_green"/>
     </body>
   </worldbody>
 </mujoco>
