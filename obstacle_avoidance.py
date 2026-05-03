@@ -3,7 +3,7 @@ import mujoco.viewer
 import numpy as np
 import threading
 
-model_path = "./scene_with_obstacles.xml"
+model_path = "../scene_with_obstacles.xml"
 model = mujoco.MjModel.from_xml_path(model_path)
 data = mujoco.MjData(model)
 _thread_local = threading.local()
@@ -29,55 +29,177 @@ EE_SITE_ID   = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_SITE, "ee_site")
 JOINT_LIMITS = np.array([[-2.618,2.618],[-2.094,2.094],[-2.967,2.967],
                           [-1.832,1.832],[-1.22,1.22],[-3.14,3.14]])
 
-def get_obstacle_positions(data):
-    obstacles = []
-    for i in range(1, 4):
-        obs_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, f"obstacle{i}")
-        obstacles.append(data.xpos[obs_id].copy())
-    return obstacles
+def _seg_point_dist_xy(p, q, c):
+    pq = q - p
+    t = np.dot(c - p, pq) / (np.dot(pq, pq) + 1e-12)
+    t = np.clip(t, 0, 1)
+    closest = p + t * pq
+    return np.linalg.norm(closest - c)
 
-def check_collision_risk(ee_pos, obstacles, threshold=0.15):
-    for obs_pos in obstacles:
-        dist = np.linalg.norm(ee_pos - obs_pos)
-        if dist < threshold:
-            return True, obs_pos, dist
-    return False, None, None
+def is_config_collision_free(qpos):
+    d = get_ik_data()
+    d.qpos[:] = qpos
+    mujoco.mj_forward(model, d)
+    pts = d.xpos[ARM_BODY_IDS]  
 
-def compute_avoidance_vector(ee_pos, obs_pos, dist):
-    direction = ee_pos - obs_pos
-    direction = direction / (np.linalg.norm(direction) + 1e-6)
-    strength = max(0, 1.0 - dist / 0.15)
-    return direction * strength * 0.3
+    if np.any(pts[:, 1] > WALL_Y_MAX) or np.any(np.abs(pts[:, 0]) > WALL_X_LIM):
+        return False
 
-def plan_safe_trajectory(current_qpos, target_qpos, data, obstacles, steps=200):
-    trajectory = []
-    for i in range(steps + 1):
-        alpha = i / steps
-        interpolated = current_qpos * (1 - alpha) + target_qpos * alpha
 
-        data.qpos[:] = interpolated
-        mujoco.mj_forward(model, data)
+    for i in range(len(pts) - 1):
+        p, q = pts[i, :2], pts[i+1, :2]  
+        r = LINK_RADII[i] + SAFETY_MARGIN
+        z_lo = min(pts[i, 2], pts[i+1, 2])
+        z_hi = max(pts[i, 2], pts[i+1, 2])
+        for j, (cx, cy) in enumerate(PILLARS_XY):
+            if z_lo > PILLAR_HEIGHTS[j] or z_hi < 0:
+                continue
+            dist_xy = _seg_point_dist_xy(p, q, np.array([cx, cy]))
+            if dist_xy < PILLAR_R + r - SAFETY_MARGIN:
+                return False
+    return True
 
-        ee_pos = get_end_effector_pos(data)
-        collision, obs_pos, dist = check_collision_risk(ee_pos, obstacles, threshold=0.12)
+def is_edge_collision_free(q1, q2):
+    dist = np.linalg.norm(q2 - q1)
+    steps = max(5, int(dist / 0.05))
+    for i in range(1, steps + 1):
+        if not is_config_collision_free(q1 + (q2 - q1) * i / steps):
+            return False
+    return True
 
-        if collision:
-            avoidance = compute_avoidance_vector(ee_pos, obs_pos, dist)
-            for j in range(3):
-                interpolated[j] += avoidance[j] * 0.5
+def ik_dls(target_pos, qpos_init, tol=1e-3, max_iter=300, damping=5e-2, step=0.3):
+    jacp = np.zeros((3, model.nv))
+    d = get_ik_data()
+    d.qpos[:] = qpos_init
+    for _ in range(max_iter):
+        mujoco.mj_forward(model, d)
+        err = target_pos - d.site_xpos[EE_SITE_ID]
+        if np.linalg.norm(err) < tol:
+            return d.qpos.copy(), True
+        mujoco.mj_jacSite(model, d, jacp, None, EE_SITE_ID)
+        dq = jacp.T @ np.linalg.solve(jacp @ jacp.T + damping**2 * np.eye(3), err)
+        mujoco.mj_integratePos(model, d.qpos, dq, step)
+    return d.qpos.copy(), False
 
-        trajectory.append(interpolated.copy())
+def ik_dls_multi(target_pos, n_seeds=40, extra_hints=None):
+    hints = list(extra_hints) if extra_hints else []
+    hints.append(np.zeros(model.nq))
+    hints += [np.array([np.random.uniform(lo, hi) for lo, hi in JOINT_LIMITS])
+              for _ in range(n_seeds)]
+    for q0 in hints:
+        q, ok = ik_dls(target_pos, q0)
+        if ok and is_config_collision_free(q):
+            return q, True
 
-    return trajectory
+    best_q, best_err = None, np.inf
+    for q0 in hints[:10]:
+        q, _ = ik_dls(target_pos, q0)
+        if not is_config_collision_free(q):
+            continue
+        d = get_ik_data()
+        d.qpos[:] = q
+        mujoco.mj_forward(model, d)
+        err = np.linalg.norm(target_pos - d.site_xpos[EE_SITE_ID])
+        if err < best_err:
+            best_err, best_q = err, q.copy()
+    if best_q is not None:
+        return best_q, best_err < 0.05
+    return hints[0], False
 
-home_pose = np.array([0, 1.57, -1.3485, 0, 0, 0, 0, 0])
-target1 = np.array([0.8, 1.2, -1.0, 0.3, 0.5, 0, 0, 0])
-target2 = np.array([-0.6, 1.8, -1.5, -0.4, -0.3, 0.5, 0, 0])
-target3 = np.array([0.4, 1.0, -0.8, 0.2, 0.8, -0.3, 0, 0])
+def _rrtc_extend(nodes, nodes_arr, parents, q_target, step_size):
+    dists = np.linalg.norm(nodes_arr[:len(nodes)] - q_target, axis=1)
+    near_idx = int(np.argmin(dists))
+    q_near = nodes[near_idx]
+    diff = q_target - q_near
+    dist = np.linalg.norm(diff)
+    q_new = q_near + diff / (dist + 1e-9) * min(step_size, dist)
+    if not is_config_collision_free(q_new) or not is_edge_collision_free(q_near, q_new):
+        return -1, False
+    idx = len(nodes)
+    nodes.append(q_new)
+    nodes_arr[idx] = q_new
+    parents.append(near_idx)
+    return idx, np.linalg.norm(q_new - q_target) < step_size
 
-waypoints = [home_pose, target1, target2, target3, home_pose]
+def rrt_plan(goal_pos, start_qpos, max_iter=6000, step_size=0.2):
+    goal_q, ok = ik_dls_multi(goal_pos, n_seeds=40, extra_hints=[start_qpos])
+    if not ok:
+        print("IK failed for goal.")
+        return None
+    if not is_config_collision_free(goal_q):
+        print("Goal config in collision.")
+        return None
 
-data.qpos[:] = home_pose
+    cap = max_iter + 2
+    ta_nodes, ta_parents = [start_qpos.copy()], [-1]
+    tb_nodes, tb_parents = [goal_q.copy()], [-1]
+    ta_arr = np.empty((cap, model.nq)); ta_arr[0] = ta_nodes[0]
+    tb_arr = np.empty((cap, model.nq)); tb_arr[0] = tb_nodes[0]
+    ta_conn = tb_conn = -1
+
+    for _ in range(max_iter):
+        q_rand = (tb_nodes[0] if np.random.random() < 0.1
+                  else np.array([np.random.uniform(lo, hi) for lo, hi in JOINT_LIMITS]))
+        idx_a, _ = _rrtc_extend(ta_nodes, ta_arr, ta_parents, q_rand, step_size)
+        if idx_a == -1:
+            continue
+        idx_b, reached = _rrtc_extend(tb_nodes, tb_arr, tb_parents, ta_nodes[idx_a], step_size)
+        if idx_b == -1:
+            continue
+        if reached:
+            ta_conn, tb_conn = idx_a, idx_b
+            break
+        ta_nodes, tb_nodes = tb_nodes, ta_nodes
+        ta_parents, tb_parents = tb_parents, ta_parents
+        ta_arr, tb_arr = tb_arr, ta_arr
+
+    if ta_conn == -1:
+        print("RRTConnect failed.")
+        return None
+
+    path_a, idx = [], ta_conn
+    while idx != -1:
+        path_a.append(ta_nodes[idx]); idx = ta_parents[idx]
+    path_a.reverse()
+    path_b, idx = [], tb_conn
+    while idx != -1:
+        path_b.append(tb_nodes[idx]); idx = tb_parents[idx]
+
+    path = path_a + path_b
+    print(f"Path found: {len(path)} waypoints.")
+    return path
+
+def smooth_path(path):
+    for _ in range(300):
+        if len(path) <= 2:
+            break
+        i = np.random.randint(0, len(path) - 2)
+        j = np.random.randint(i + 2, min(i + 10, len(path)))
+        if is_edge_collision_free(path[i], path[j]):
+            path = path[:i+1] + path[j:]
+    return path
+
+def interpolate_path(waypoints, max_joint_vel=0.04):
+    dt = model.opt.timestep
+    segs = []
+    for i in range(len(waypoints) - 1):
+        q1, q2 = np.array(waypoints[i]), np.array(waypoints[i+1])
+        max_diff = np.max(np.abs(q2 - q1))
+        n = max(2, int(max_diff / (max_joint_vel * dt)))
+        t = np.linspace(0, 1, n, endpoint=False)
+        s = t * t * (3 - 2 * t)  
+        segs.append(q1 + np.outer(s, q2 - q1))
+    segs.append(waypoints[-1:])
+    return list(np.concatenate(segs))
+
+cart_targets = np.array([
+    [ 0.5,  0.1, 1.0],   
+    [ 0.7,  0.3, 0.6],   
+    [-0.6,  0.2, 0.9],   
+    [ 0.0,  0.3, 0.5],   
+])
+
+data.qpos[:] = 0
 mujoco.mj_forward(model, data)
 
 TARGET_COLORS = np.array([[1.0,0.2,0.2,0.8],[0.2,1.0,0.2,0.8],[0.2,0.2,1.0,0.8],[1.0,1.0,0.2,0.8]], dtype=np.float32)
