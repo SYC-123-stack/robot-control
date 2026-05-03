@@ -1,39 +1,11 @@
-## AgileX PiPER Description (MJCF)
+# 机械臂避障运动规划
 
-> [!IMPORTANT]
-> Requires MuJoCo 2.3.4 or later.
+基于 MuJoCo 的 6-DOF 机械臂避障轨迹规划与平滑控制。
 
-## Changelog
+## 算法流程
 
-See [CHANGELOG.md](./CHANGELOG.md) for a full history of changes.
-
-### Overview
-
-This package contains a simplified robot description (MJCF) of the [AgileX PiPER](https://global.agilex.ai/products/piper). It is derived from the publicly available [model](https://github.com/agilexrobotics/Piper_ros/tree/ros-noetic-no-aloha/src/piper_description/urdf).
-
-<p float="left">
-  <img src="piper.png" width="400">
-</p>
-
-### Derivation steps
-
-1.  Added `<mujoco> <compiler balanceinertia="true" discardvisual="false"/> </mujoco>` to the URDF's
-   `<robot>` clause in order to preserve visual geometries.
-2. Loaded the URDF into MuJoCo and saved a corresponding MJCF.
-3. Converted the the .objs to .xmls using [obj2mjcf](https://github.com/kevinzakka/obj2mjcf) and replaced the original stls with them (since each obj in mujoco can have 1 color).
-4. Merged similar materials between the .objs
-5. Created a `<default>` section to define common properties for joints, actuators, and geoms.
-6. Added an equality constraint so that the right finger mimics the position of the left finger.
-7. Manually designed box collision geoms for the gripper.
-8. Added `exclude` clause to prevent collisions between `base_link` and `link1`.
-9. Added position controlled actuators.
-10. Added `impratio=10` and `cone=elliptic` for better noslip.
-11. Added `scene.xml` which includes the robot, with a textured groundplane, skybox, and haze.
-
-## License
-
-This model is released under an [MIT License](LICENSE).
-
-## Acknowledgement
-
-This model was graciously contributed by [Omar Rayyan](https://orayyan.com/).
+1. **IK 求解**：多随机种子求解目标点关节角配置
+2. **RRT 规划**：双树搜索无碰撞路径
+3. **路径平滑**：Shortcut 算法优化路径
+4. **轨迹插值**：Smoothstep 生成平滑轨迹
+5. **执行控制**：PD 控制器跟踪，每点停留 1 秒
